@@ -7,58 +7,77 @@
 //
 
 import UIKit
-import CoreData
+import RealmSwift
+import SwipeCellKit
+import ChameleonFramework
 
-class CategoryViewController: UITableViewController {
+class CategoryViewController: SwipeTableViewController {
 
     
     // MARK: - Class Variables
-    var categoryArray = [Category]()
+    let realm = try! Realm()
+    var categories: Results<Category>?
+    @IBOutlet weak var searchBar: UISearchBar!
     var textField = UITextField()
-    let context = (UIApplication.shared.delegate as! AppDelegate).persistentContainer.viewContext
     
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        
+       //tableView.rowHeight = 80.0
          loadCategories()
     }
-
-    override func didReceiveMemoryWarning() {
-        super.didReceiveMemoryWarning()
-        // Dispose of any resources that can be recreated.
-    }
+    
+//    override func viewWillAppear(_ animated: Bool) {
+//        
+//        guard let navBar = navigationController?.navigationBar else {fatalError("Navigation Controller Does Not Exist!")}
+//        
+//        guard let navBarColor = UIColor(hexString: "1D9BF6") else { fatalError() }
+//        
+//        navBar.barTintColor = navBarColor
+//        navBar.tintColor = ContrastColorOf(navBarColor, returnFlat: true)
+//        
+//        searchBar.barTintColor = navBar.barTintColor
+//        
+//    }
 
     //MARK: - UITableView Data Source Methods
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         
-        let cell = tableView.dequeueReusableCell(withIdentifier: "CategoryCell", for: indexPath)
-        cell.textLabel?.text = self.categoryArray[indexPath.row].name
+        let topVisibleIndexPath: IndexPath = self.tableView.indexPathsForVisibleRows![0]
+        print(topVisibleIndexPath.row)
+        
+        let cell = super.tableView(tableView, cellForRowAt: indexPath)
+        
+        if let category = self.categories?[indexPath.row] {
+            cell.textLabel?.text = category.name
+            cell.backgroundColor = UIColor(hexString: category.color!)
+            cell.textLabel?.textColor = ContrastColorOf(cell.backgroundColor!, returnFlat: true)
+        } else {
+            cell.textLabel?.text = "No categories added yet..."
+        }
         
         return cell
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return categoryArray.count
+        return categories?.count ?? 1
     }
     
     // MARK: - UITableView Delegate Methods
     
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-//        let cell = tableView.cellForRow(at: indexPath)
-    
         performSegue(withIdentifier: "GoToItems", sender: self)
         tableView.deselectRow(at: indexPath, animated: true)
-        
     }
     
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
         let destinationVC = segue.destination as! TodoListViewController
         if let indexPath = tableView.indexPathForSelectedRow {
-            destinationVC.selectedCategory = categoryArray[indexPath.row]
+            destinationVC.selectedCategory = categories?[indexPath.row]
         }
     }
+    
     
     // MARK: - Add New Items
 
@@ -70,11 +89,11 @@ class CategoryViewController: UITableViewController {
             // User clicked add item button on UIAlert
             
             
-            let newCategory = Category(context: self.context)
+            let newCategory = Category()
             newCategory.name = self.textField.text!
-            self.categoryArray.append(newCategory)
+            newCategory.color = RandomFlatColor().hexValue()
             
-            self.saveCategories()
+            self.save(category: newCategory)
             
             self.tableView.reloadData()
         }
@@ -92,27 +111,39 @@ class CategoryViewController: UITableViewController {
     
     // MARK: - Persistent Data Methods
     
-    func saveCategories() {
-        
+    func save(category: Category) {
+
         do {
-            
-            try context.save()
+            try realm.write{
+                realm.add(category)
+            }
         } catch {
             print("Error saving context: \(error)")
         }
-        
+
     }
     
-    func loadCategories(with request: NSFetchRequest<Category> = Category.fetchRequest()) {
-        
-        do {
-            categoryArray = try context.fetch(request)
-        } catch {
-            print("Error fetching data from context: \(error)")
-        }
+    func loadCategories() {
+
+        categories = realm.objects(Category.self)
         
         tableView.reloadData()
-        
+
+    }
+    
+    // MARK: - SwipeTableViewController Override Functions
+    
+    override func swipeCellWasDeleted(at indexPath: IndexPath) {
+        super.swipeCellWasDeleted(at: indexPath)
+        if let category = self.categories?[indexPath.row] {
+            do {
+                try self.realm.write {
+                    self.realm.delete(category)
+                }
+            } catch {
+                print("Error deleting category: \(error)")
+            }
+        }
     }
     
 }
@@ -122,18 +153,18 @@ extension CategoryViewController: UISearchBarDelegate {
     
     
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-        let request: NSFetchRequest<Category> = Category.fetchRequest()
-        request.predicate = NSPredicate(format: "name CONTAINS[cd] %@", searchBar.text!)
-        request.sortDescriptors = [NSSortDescriptor(key: "name", ascending: true)]
         
-        loadCategories(with: request)
-        searchBar.resignFirstResponder()
+        if let currentCategories = categories {
+            categories = currentCategories.filter("name MATCHES %@", searchBar.text!)
+        }
+        
+        tableView.reloadData()
     }
     
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
         if (searchBar.text!.count <= 0) {
             loadCategories()
-            
+
             DispatchQueue.main.async {
                 searchBar.resignFirstResponder()
             }

@@ -7,15 +7,18 @@
 //
 
 import UIKit
-import CoreData
+import RealmSwift
+import ChameleonFramework
 
-class TodoListViewController: UITableViewController {
+class TodoListViewController: SwipeTableViewController {
 
     
     // MARK: - Class Variables
-    var itemsArray = [Item]()
+    let realm = try! Realm()
+    var items: Results<Item>?
+    @IBOutlet weak var searchBar: UISearchBar!
+    @IBOutlet weak var addButton: UIBarButtonItem!
     var textField = UITextField()
-    let context = (UIApplication.shared.delegate as! AppDelegate).persistentContainer.viewContext
     var selectedCategory: Category? {
         didSet {
             loadItems()
@@ -26,43 +29,85 @@ class TodoListViewController: UITableViewController {
     
     override func viewDidLoad() {
         super.viewDidLoad()
+        
+        tableView.backgroundColor = UIColor(hexString: selectedCategory!.color!)?.darken(byPercentage: 100.0)
+
     }
     
-
-
-    override func didReceiveMemoryWarning() {
-        super.didReceiveMemoryWarning()
-        // Dispose of any resources that can be recreated.
+    override func viewWillAppear(_ animated: Bool) {
+        
+        guard let colorHexCode = selectedCategory?.color else { fatalError() }
+        
+        updateNavBar(withHexCode: colorHexCode)
+        
+    }
+    
+    override func viewWillDisappear(_ animated: Bool) {
+        updateNavBar(withHexCode: "1D9BF6")
+    }
+    
+    func updateNavBar(withHexCode colorHexCode: String) {
+        
+        guard let navBar = navigationController?.navigationBar else {fatalError("Navigation Controller Does Not Exist!")}
+        guard let navBarColor = UIColor(hexString: colorHexCode) else { fatalError() }
+        let foregroundColor = ContrastColorOf(navBarColor, returnFlat: true)
+        
+        // Set background colors
+        navBar.barTintColor = navBarColor
+        searchBar.barTintColor = navBarColor
+        
+        // Set foreground colors
+        navBar.tintColor = foregroundColor
+        navBar.largeTitleTextAttributes = [NSAttributedStringKey.foregroundColor: foregroundColor]
+        navBar.titleTextAttributes = [NSAttributedStringKey.foregroundColor: foregroundColor]
+        addButton.tintColor = foregroundColor
+        
+        
     }
     
     //MARK: - UITableView Data Source Methods
     
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "TodoCell", for: indexPath)
         
-        cell.textLabel?.text = self.itemsArray[indexPath.row].title
-        cell.accessoryType = self.itemsArray[indexPath.row].done ? .checkmark : .none
+        let cell = super.tableView(tableView, cellForRowAt: indexPath)
+        
+        if let item = self.items?[indexPath.row] {
+            cell.textLabel?.text = item.title
+            cell.accessoryType = item.done ? .checkmark : .none
+            
+            let percent = CGFloat(indexPath.row+1)/CGFloat(self.items!.count+2)
+            
+            cell.backgroundColor = UIColor(hexString: selectedCategory!.color!)?.darken(byPercentage: percent)
+            cell.textLabel?.textColor = ContrastColorOf(cell.backgroundColor!, returnFlat: true)
+        } else {
+            cell.textLabel?.text = "No items added yet..."
+            cell.accessoryType = .none
+        }
         
         return cell
     }
     
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return itemsArray.count
+        return items?.count ?? 1
     }
     
     
     // MARK: - UITableView Delegate Methods
     
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        let cell = tableView.cellForRow(at: indexPath)
         
-        itemsArray[indexPath.row].done = !itemsArray[indexPath.row].done
-        cell?.accessoryType = itemsArray[indexPath.row].done ? .checkmark : .none
+        if let item = items?[indexPath.row] {
+            do {
+                try realm.write {
+                    item.done = !item.done
+                }
+            } catch {
+                print("Error updating item done attribute: \(error)")
+            }
+        }
         
-        saveItems()
-        
+        tableView.reloadData()
         tableView.deselectRow(at: indexPath, animated: true)
-        
         
     }
     
@@ -74,15 +119,19 @@ class TodoListViewController: UITableViewController {
         
         let action = UIAlertAction(title: "Add Item", style: .default) { (action) in
             // User clicked add item button on UIAlert
-
             
-            let newItem = Item(context: self.context)
-            newItem.title = self.textField.text!
-            newItem.done = false
-            newItem.category = self.selectedCategory
-            self.itemsArray.append(newItem)
-            
-            self.saveItems()
+            if let category = self.selectedCategory {
+                do {
+                try self.realm.write {
+                    let newItem = Item()
+                    newItem.title = self.textField.text!
+                    newItem.dateCreated = Date() 
+                    category.items.append(newItem)
+                }
+                }catch {
+                    print("Error saving item: \(error)")
+                }
+            }
             
             self.tableView.reloadData()
         }
@@ -100,51 +149,58 @@ class TodoListViewController: UITableViewController {
     
     // MARK: - Persistent Data Methods
     
-    func saveItems() {
-        
+    func save(item: Item) {
+
         do {
-            
-            try context.save()
+            try realm.write{
+                realm.add(item)
+            }
         } catch {
             print("Error saving context: \(error)")
         }
-        
+
     }
     
-    func loadItems(with request: NSFetchRequest<Item> = Item.fetchRequest()) {
-
-        let categoryPredicate = NSPredicate(format: "category.name MATCHES %@", selectedCategory!.name!)
-
-        if let requestPredicate = request.predicate {
-            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [categoryPredicate, requestPredicate])
-        } else {
-            request.predicate = categoryPredicate
-        }
+    func loadItems() {
         
-        do {
-            itemsArray = try context.fetch(request)
-        } catch {
-            print("Error fetching data from context: \(error)")
+        if let category = selectedCategory {
+            items = category.items.sorted(byKeyPath: "title", ascending: true)
         }
-        
+
         tableView.reloadData()
-        
-    }
 
+    }
+    
+    // MARK: - SwipeTableViewController Override Functions
+    
+    override func swipeCellWasDeleted(at indexPath: IndexPath) {
+        super.swipeCellWasDeleted(at: indexPath)
+        if let item = self.items?[indexPath.row] {
+            do {
+                try self.realm.write {
+                    self.realm.delete(item)
+                }
+            } catch {
+                print("Error deleting item: \(error)")
+            }
+        }
+    }
+    
 }
 
 // MARK: - Searchbar Delegate Extension
 extension TodoListViewController: UISearchBarDelegate {
+    
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-        let request: NSFetchRequest<Item> = Item.fetchRequest()
-        request.predicate = NSPredicate(format: "title CONTAINS[cd] %@", searchBar.text!)
-        request.sortDescriptors = [NSSortDescriptor(key: "title", ascending: true)]
         
-        loadItems(with: request)
-        searchBar.resignFirstResponder()
+        items = items?.filter("title CONTAINS[cd] %@", searchBar.text!).sorted(byKeyPath: "dateCreated", ascending: true)
+        
+        tableView.reloadData()
+        
     }
     
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        
         if (searchBar.text!.count <= 0) {
             loadItems()
             
@@ -152,6 +208,7 @@ extension TodoListViewController: UISearchBarDelegate {
                 searchBar.resignFirstResponder()
             }
         }
+        
     }
+    
 }
-
